@@ -1,0 +1,19 @@
+{
+  "name": "project-reclamation-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "server": "yarn workspace @reclamation/server start",
+    "client": "yarn workspace @reclamation/client dev",
+    "build": "yarn workspaces run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "rimraf": "^5.0.0"
+  }
+}
