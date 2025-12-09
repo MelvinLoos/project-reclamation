@@ -28,12 +28,15 @@ export class GameScene extends Phaser.Scene {
     create() {
         console.log("Initializing GameScene...");
 
-        // 1. Generate the visuals for the map (Dirt/Wall)
+        // 1. Generate the visuals for the map
         this.generateTileset();
 
         // 2. Setup Fluid Visuals (Layer 1 - Top)
         this.fluidTexture = this.textures.createCanvas('fluid_data', this.fluidDim, this.fluidDim);
-        if (!this.fluidTexture) return;
+        if (!this.fluidTexture) {
+            console.error('Failed to create fluid texture');
+            return;
+        }
         this.fluidImageData = this.fluidTexture.context.createImageData(this.fluidDim, this.fluidDim);
 
         this.fluidImage = this.add.image(0, 0, 'fluid_data').setOrigin(0, 0);
@@ -86,11 +89,15 @@ export class GameScene extends Phaser.Scene {
     /**
      * Enhanced Procedural Tileset
      * 0: Dirt, 1: Wall, 2: Road, 3: Park, 4: Water, 5: Canal
+     * 6: Industrial Tank, 7: Skyscraper
      */
     private generateTileset() {
-        // Create a 192x32 texture containing six 32x32 tiles
-        const canvas = this.textures.createCanvas('tileset', 192, 32);
-        if (!canvas) return;
+        // Create a 256x32 texture containing 8 tiles
+        const canvas = this.textures.createCanvas('tileset', 256, 32);
+        if (!canvas) {
+            console.error('Failed to create tileset canvas');
+            return;
+        }
         const ctx = canvas.context;
 
         // Tile 0: Dirt (Brown)
@@ -129,11 +136,31 @@ export class GameScene extends Phaser.Scene {
         ctx.fillStyle = '#90a4ae'; // Concrete Edge
         ctx.fillRect(160, 0, 32, 32);
         ctx.fillStyle = '#0277bd'; // Clean Blue Water
-        ctx.fillRect(160, 4, 32, 24); // Channel in middle
+        ctx.fillRect(160, 4, 32, 24); 
 
-        if (canvas) {
-            canvas.refresh();
-        }
+        // Tile 6: Industrial Tank (Rusty Orange/Metallic)
+        ctx.fillStyle = '#3e2723'; // Ground
+        ctx.fillRect(192, 0, 32, 32);
+        // Draw round tank
+        ctx.fillStyle = '#bf360c'; // Rust
+        ctx.beginPath();
+        ctx.arc(208, 16, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffccbc'; // Specular
+        ctx.beginPath();
+        ctx.arc(204, 12, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Tile 7: Skyscraper (Glass/Steel)
+        ctx.fillStyle = '#263238'; // Dark frame
+        ctx.fillRect(224, 0, 32, 32);
+        ctx.fillStyle = '#81d4fa'; // Glass Windows
+        ctx.fillRect(226, 2, 12, 12);
+        ctx.fillRect(242, 2, 8, 12);
+        ctx.fillRect(226, 18, 12, 12);
+        ctx.fillRect(242, 18, 8, 12);
+
+        canvas.refresh();
     }
 
     private async connect() {
