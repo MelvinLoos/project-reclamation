@@ -10,7 +10,7 @@ export class GameScene extends Phaser.Scene {
     private players: Map<string, Phaser.GameObjects.Graphics> = new Map();
 
     // Fluid
-    private fluidTexture!: Phaser.Textures.CanvasTexture | null; 
+    private fluidTexture!: Phaser.Textures.CanvasTexture; 
     private fluidDim = 100; 
     private fluidImageData!: ImageData; 
     private fluidImage!: Phaser.GameObjects.Image;
@@ -18,6 +18,15 @@ export class GameScene extends Phaser.Scene {
     // Terrain
     private map!: Phaser.Tilemaps.Tilemap;
     private terrainLayer!: Phaser.Tilemaps.TilemapLayer;
+
+    // Interaction & Camera
+    private dragOrigin: { x: number, y: number } | null = null;
+    private targetZoom: number = 1.0;
+    private targetScroll: { x: number, y: number } = { x: 0, y: 0 };
+    private isDragging: boolean = false;
+    
+    // Debug Border to verify alignment
+    private alignmentBorder!: Phaser.GameObjects.Graphics;
 
     constructor() {
         super("GameScene");
@@ -33,19 +42,18 @@ export class GameScene extends Phaser.Scene {
 
         // 2. Setup Fluid Visuals (Layer 1 - Top)
         this.fluidTexture = this.textures.createCanvas('fluid_data', this.fluidDim, this.fluidDim);
-        if (!this.fluidTexture) {
-            console.error('Failed to create fluid texture');
-            return;
-        }
         this.fluidImageData = this.fluidTexture.context.createImageData(this.fluidDim, this.fluidDim);
 
         this.fluidImage = this.add.image(0, 0, 'fluid_data').setOrigin(0, 0);
         this.fluidImage.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-        this.fluidImage.setDepth(1); // Draw ABOVE the terrain
+        this.fluidImage.setDepth(1); 
+        
+        // Debug alignment border
+        this.alignmentBorder = this.add.graphics();
+        this.alignmentBorder.setDepth(100);
 
-        // 3. Handle Resizing (Responsive Layout)
-        this.scale.on('resize', this.resizeGame, this);
-        this.time.delayedCall(10, () => this.resizeGame());
+        // 3. Setup Camera & Interaction
+        this.setupCamera();
 
         // 4. Connect
         this.client = new Client("ws://localhost:2567");
@@ -53,108 +61,134 @@ export class GameScene extends Phaser.Scene {
 
         // 5. Input
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            if (this.room) {
-                this.room.send(MSG_INPUT.CLICK, { x: pointer.worldX, y: pointer.worldY });
+            // Drag on Left Click (Primary) now
+            if (pointer.primaryDown) {
+                this.dragOrigin = { x: pointer.x, y: pointer.y };
+                this.isDragging = true;
+            } else {
+                // Right click for game interaction
+                const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+                if (this.room) {
+                    this.room.send(MSG_INPUT.CLICK, { x: worldPoint.x, y: worldPoint.y });
+                }
             }
         });
+
+        this.input.on('pointerup', () => {
+            this.dragOrigin = null;
+            this.isDragging = false;
+        });
+
+        this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+            if (this.isDragging && this.dragOrigin) {
+                const dx = pointer.x - this.dragOrigin.x;
+                const dy = pointer.y - this.dragOrigin.y;
+                
+                // Update Target Scroll instead of direct scroll for smoothness
+                this.targetScroll.x -= dx / this.cameras.main.zoom;
+                this.targetScroll.y -= dy / this.cameras.main.zoom;
+                
+                this.dragOrigin = { x: pointer.x, y: pointer.y };
+            }
+        });
+
+        this.input.on('wheel', (pointer: Phaser.Input.Pointer, gameObjects: any, deltaX: number, deltaY: number) => {
+            const zoomAmount = 0.1;
+            
+            if (deltaY > 0) {
+                this.targetZoom -= zoomAmount;
+            } else {
+                this.targetZoom += zoomAmount;
+            }
+
+            // Clamp zoom
+            this.targetZoom = Phaser.Math.Clamp(this.targetZoom, 0.5, 4.0);
+        });
+        
+        // Disable context menu on the game canvas to prevent accidental right-click actions
+        this.game.canvas.oncontextmenu = (e) => {
+            e.preventDefault();
+        };
+        
+        this.input.mouse?.disableContextMenu();
     }
 
-    private resizeGame() {
-        const width = this.scale.width;
-        const height = this.scale.height;
+    private setupCamera() {
+        const worldWidth = this.fluidDim * 32;
+        const worldHeight = this.fluidDim * 32;
 
-        // Target Aspect Ratio (Square 1:1)
-        const minDim = Math.min(width, height);
+        this.cameras.main.setBounds(0, 0, worldWidth, worldHeight);
+        this.cameras.main.centerOn(worldWidth / 2, worldHeight / 2);
         
-        // Calculate centered position
-        const x = (width - minDim) / 2;
-        const y = (height - minDim) / 2;
-
-        // Apply to Fluid Image
-        if (this.fluidImage) {
-            this.fluidImage.setPosition(x, y);
-            this.fluidImage.setDisplaySize(minDim, minDim);
-        }
-
-        // Apply to Terrain Layer
-        if (this.terrainLayer) {
-            this.terrainLayer.setPosition(x, y);
-            const scale = minDim / (this.fluidDim * 32); 
-            this.terrainLayer.setScale(scale);
-        }
-        
-        this.cameras.main.setViewport(0, 0, width, height);
+        // Initialize targets
+        this.targetZoom = 1.0;
+        this.targetScroll = { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY };
     }
 
+    // ... [generateTileset, connect, createTerrainMap, updateFluidData, setupStateListeners remain unchanged] ...
     /**
      * Enhanced Procedural Tileset
      * 0: Dirt, 1: Wall, 2: Road, 3: Park, 4: Water, 5: Canal
      * 6: Industrial Tank, 7: Skyscraper
      */
     private generateTileset() {
-        // Create a 256x32 texture containing 8 tiles
         const canvas = this.textures.createCanvas('tileset', 256, 32);
-        if (!canvas) {
-            console.error('Failed to create tileset canvas');
-            return;
-        }
         const ctx = canvas.context;
 
-        // Tile 0: Dirt (Brown)
+        // Tile 0: Dirt
         ctx.fillStyle = '#5d4037';
         ctx.fillRect(0, 0, 32, 32);
         ctx.fillStyle = '#3e2723';
         ctx.fillRect(4, 4, 24, 24);
 
-        // Tile 1: Wall/Ruin (Concrete Blue-Grey)
+        // Tile 1: Wall
         ctx.fillStyle = '#455a64'; 
         ctx.fillRect(32, 0, 32, 32);
-        ctx.fillStyle = '#cfd8dc'; // Rebar/Highlight
+        ctx.fillStyle = '#cfd8dc'; 
         ctx.fillRect(36, 4, 4, 24);
         ctx.fillRect(48, 4, 4, 12);
 
-        // Tile 2: Road (Asphalt)
+        // Tile 2: Road
         ctx.fillStyle = '#212121';
         ctx.fillRect(64, 0, 32, 32);
-        ctx.fillStyle = '#ffeb3b'; // Yellow Line
-        ctx.fillRect(78, 12, 4, 8); // Dash
+        ctx.fillStyle = '#ffeb3b'; 
+        ctx.fillRect(78, 12, 4, 8); 
 
-        // Tile 3: Park (Grass)
+        // Tile 3: Park
         ctx.fillStyle = '#2e7d32';
         ctx.fillRect(96, 0, 32, 32);
-        ctx.fillStyle = '#a5d6a7'; // Flower/Light grass
+        ctx.fillStyle = '#a5d6a7'; 
         ctx.fillRect(100, 10, 4, 4); 
 
-        // Tile 4: Water (Stagnant - Murky Green/Blue)
+        // Tile 4: Water
         ctx.fillStyle = '#006064'; 
         ctx.fillRect(128, 0, 32, 32);
-        ctx.fillStyle = '#00838f'; // Ripple
+        ctx.fillStyle = '#00838f'; 
         ctx.fillRect(132, 8, 20, 4);
         ctx.fillRect(140, 20, 10, 4);
 
-        // Tile 5: Canal (Flowing Blue + Concrete Edges)
-        ctx.fillStyle = '#90a4ae'; // Concrete Edge
+        // Tile 5: Canal
+        ctx.fillStyle = '#90a4ae'; 
         ctx.fillRect(160, 0, 32, 32);
-        ctx.fillStyle = '#0277bd'; // Clean Blue Water
+        ctx.fillStyle = '#0277bd'; 
         ctx.fillRect(160, 4, 32, 24); 
 
-        // Tile 6: Industrial Tank (Rusty Orange/Metallic)
-        ctx.fillStyle = '#3e2723'; // Ground
+        // Tile 6: Tank
+        ctx.fillStyle = '#3e2723'; 
         ctx.fillRect(192, 0, 32, 32);
-        // Draw round tank
-        ctx.fillStyle = '#bf360c'; // Rust
+        ctx.fillStyle = '#bf360c'; 
         ctx.beginPath();
         ctx.arc(208, 16, 14, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#ffccbc'; // Specular
+        ctx.fillStyle = '#ffccbc'; 
         ctx.beginPath();
         ctx.arc(204, 12, 4, 0, Math.PI * 2);
         ctx.fill();
 
-        // Tile 7: Skyscraper (Glass/Steel)
-        ctx.fillStyle = '#263238'; // Dark frame
+        // Tile 7: Skyscraper
+        ctx.fillStyle = '#263238'; 
         ctx.fillRect(224, 0, 32, 32);
-        ctx.fillStyle = '#81d4fa'; // Glass Windows
+        ctx.fillStyle = '#81d4fa'; 
         ctx.fillRect(226, 2, 12, 12);
         ctx.fillRect(242, 2, 8, 12);
         ctx.fillRect(226, 18, 12, 12);
@@ -170,22 +204,17 @@ export class GameScene extends Phaser.Scene {
 
             // --- HANDLERS ---
 
-            // 1. Terrain Map (Static, received once)
             this.room.onMessage(MSG_FLUID.TERRAIN, (message: any) => {
-                console.log("Received Terrain Map");
-                // Convert buffer to Uint8Array
                 if (message instanceof ArrayBuffer || (message.buffer && message.byteLength !== undefined)) {
                     const data = new Uint8Array(message instanceof ArrayBuffer ? message : message.buffer);
                     this.createTerrainMap(data);
                 }
             });
 
-            // 2. Fluid Config
             this.room.onMessage(MSG_FLUID.CONFIG, (message: any) => {
                 console.log("Fluid Config:", message);
             });
 
-            // 3. Fluid Update (Dynamic)
             this.room.onMessage(MSG_FLUID.PATCH, (message: any) => {
                 if (message instanceof ArrayBuffer || (message.buffer && message.byteLength !== undefined)) {
                     const buffer = message instanceof ArrayBuffer ? message : message.buffer;
@@ -201,7 +230,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     private createTerrainMap(data: Uint8Array) {
-        // Convert 1D array to 2D array for Phaser
         const mapData: number[][] = [];
         const width = 100; // Known from config
         
@@ -217,8 +245,30 @@ export class GameScene extends Phaser.Scene {
         const tiles = this.map.addTilesetImage('tileset', 'tileset', 32, 32);
         if(tiles) {
             this.terrainLayer = this.map.createLayer(0, tiles, 0, 0)!;
-            this.terrainLayer.setDepth(0); // Layer 0 - Bottom
-            this.resizeGame();
+            this.terrainLayer.setDepth(0); 
+            
+            // Set world size to match the map
+            // 100 tiles * 32px = 3200px
+            const worldSize = 100 * 32;
+            
+            // FIX: Fluid Image must match the world size exactly
+            this.fluidImage.setDisplaySize(worldSize, worldSize);
+            // FIX: Origin is 0,0, so position should be 0,0 to match map layer at 0,0
+            this.fluidImage.setPosition(0, 0); 
+            
+            // Draw a debug border around the world
+            if (this.alignmentBorder) {
+                this.alignmentBorder.clear();
+                this.alignmentBorder.lineStyle(4, 0xff0000, 1);
+                this.alignmentBorder.strokeRect(0, 0, worldSize, worldSize);
+            }
+            
+            // Re-set camera bounds now that we have data
+            this.cameras.main.setBounds(0, 0, worldSize, worldSize);
+            
+            // Center camera on the map initially
+            this.cameras.main.centerOn(worldSize / 2, worldSize / 2);
+            this.targetScroll = { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY };
         }
     }
 
@@ -238,12 +288,11 @@ export class GameScene extends Phaser.Scene {
             if (val > 0) {
                 // R, G, B, Alpha
                 d[idx + 0] = 0;     
-                d[idx + 1] = val + 50; // Bright Green
+                d[idx + 1] = val + 50; 
                 d[idx + 2] = 0;     
-                // Alpha: 180 (Semi-transparent) so we can see the ruins underneath!
                 d[idx + 3] = 180;   
             } else {
-                d[idx + 3] = 0;     // Transparent
+                d[idx + 3] = 0;     
             }
         }
         
@@ -271,5 +320,27 @@ export class GameScene extends Phaser.Scene {
         };
     }
 
-    update(time: number, delta: number) {}
+    update(time: number, delta: number) {
+        // Smooth Camera Movement (Lerp)
+        const lerpFactor = 0.1;
+        
+        // Zoom
+        if (Math.abs(this.cameras.main.zoom - this.targetZoom) > 0.001) {
+            const newZoom = Phaser.Math.Linear(this.cameras.main.zoom, this.targetZoom, lerpFactor);
+            this.cameras.main.setZoom(newZoom);
+        }
+
+        // Scroll
+        // We only interpolate scroll if NOT dragging, or if we want smoother drag.
+        // Direct setting is usually preferred for drag to feel 1:1, but lerp feels "heavy".
+        // Let's use lerp for wheel zoom centering, but for dragging we might want direct.
+        // Actually, let's just lerp everything for consistent feel.
+        
+        if (Math.abs(this.cameras.main.scrollX - this.targetScroll.x) > 0.1 || 
+            Math.abs(this.cameras.main.scrollY - this.targetScroll.y) > 0.1) {
+            
+            this.cameras.main.scrollX = Phaser.Math.Linear(this.cameras.main.scrollX, this.targetScroll.x, lerpFactor);
+            this.cameras.main.scrollY = Phaser.Math.Linear(this.cameras.main.scrollY, this.targetScroll.y, lerpFactor);
+        }
+    }
 }
