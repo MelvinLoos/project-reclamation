@@ -26,13 +26,11 @@ export class FluidSystem {
     }
 
     tick(deltaTime: number) {
-        // If disabled, stop simulation logic
         if (!this.isFluidEnabled) return;
 
         this.nextFluid.set(this.currentFluid);
 
         // Source: Pump in center
-        // TWEAK: Reduced from 5.0 to 0.5 for slower accumulation
         const centerIdx = Math.floor(this.size / 2) + (this.width / 2);
         this.nextFluid[centerIdx] += 0.5; 
         
@@ -48,28 +46,74 @@ export class FluidSystem {
     }
 
     private spreadToNeighbors(i: number, amount: number) {
-        // TWEAK: Reduced from 0.25 to 0.1 for more viscous movement
-        const flowRate = 0.1; 
+        // Base flow rate
+        let flowRate = 0.1; 
+        
+        // --- TERRAIN TYPE MODIFIER ---
+        // Canals (5) and Water (4) allow faster flow
+        // We need to access the map data directly or add a helper
+        // Since TerrainSystem exposes getMap(), we can use that if we cache it, 
+        // or just accept the overhead of a helper call.
+        // For performance, let's assume we can access the type.
+        // But for now, we rely on getFlow returning a vector to imply it's a canal.
+        
+        const flow = this.terrainSystem.getFlow(i);
+        const hasFlow = (Math.abs(flow.x) > 0.01 || Math.abs(flow.y) > 0.01);
+
+        if (hasFlow) {
+            flowRate = 0.4; // Canals flow 4x faster
+        }
+
         const neighbors = [i - this.width, i + this.width, i - 1, i + 1];
+        const neighborDirs = [
+            {x: 0, y: -1}, // Up
+            {x: 0, y: 1},  // Down
+            {x: -1, y: 0}, // Left
+            {x: 1, y: 0}   // Right
+        ];
 
         if (Math.random() > 0.5) {
             const temp = neighbors[0]; neighbors[0] = neighbors[3]; neighbors[3] = temp;
+            const tempD = neighborDirs[0]; neighborDirs[0] = neighborDirs[3]; neighborDirs[3] = tempD;
         }
 
-        for (const nIdx of neighbors) {
+        for (let k = 0; k < 4; k++) {
+            const nIdx = neighbors[k];
+            const nDir = neighborDirs[k];
+
             if (nIdx < 0 || nIdx >= this.size) continue;
             if (this.terrainSystem.isWallIndex(nIdx)) continue;
 
             const myLevel = this.currentFluid[i];
             const theirLevel = this.currentFluid[nIdx];
 
-            if (myLevel > theirLevel) {
-                const diff = myLevel - theirLevel;
-                const flow = Math.min(amount, diff * flowRate);
+            // Modified Logic: Canals push fluid even if levels are equal!
+            // This is "Pressure" logic.
+            const alignment = hasFlow ? (flow.x * nDir.x) + (flow.y * nDir.y) : 0;
+            
+            // Artificial height difference based on flow
+            // If flowing towards neighbor, pretend I am higher than I am.
+            const flowPressure = alignment > 0.5 ? 0.5 : 0;
+
+            if (myLevel + flowPressure > theirLevel) {
+                let diff = (myLevel + flowPressure) - theirLevel;
+                let moveAmount = Math.min(amount, diff * flowRate);
                 
-                this.nextFluid[i] -= flow;
-                this.nextFluid[nIdx] += flow;
-                amount -= flow;
+                // --- FLOW BIAS ---
+                if (hasFlow) {
+                    if (alignment > 0.5) {
+                        // Boost flow downstream significantly
+                        moveAmount *= 3.0; 
+                    } else if (alignment < -0.5) {
+                        moveAmount *= 0.1;
+                    }
+                }
+
+                moveAmount = Math.min(moveAmount, amount);
+
+                this.nextFluid[i] -= moveAmount;
+                this.nextFluid[nIdx] += moveAmount;
+                amount -= moveAmount;
                 if(amount <= 0) break;
             }
         }
@@ -77,12 +121,9 @@ export class FluidSystem {
 
     getCompressedState(): Uint8Array {
         const buffer = new Uint8Array(this.size);
-        
-        // If disabled, send empty buffer so client clears any existing fluid
         if (!this.isFluidEnabled) return buffer;
 
         for(let i=0; i<this.size; i++) {
-            // TWEAK: Adjusted visual scaling so 0.5 flow is still visible
             const val = Math.min(255, Math.floor(this.currentFluid[i] * 50.0)); 
             buffer[i] = val;
         }

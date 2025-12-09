@@ -13,11 +13,16 @@ export class TerrainSystem {
     readonly width: number;
     readonly height: number;
     private map: Uint8Array;
+    
+    // Flow Vectors: packed [vx, vy] for each cell
+    // Used by FluidSystem to push toxicity downstream
+    private flowMap: Float32Array;
 
     constructor(width: number, height: number) {
         this.width = width;
         this.height = height;
         this.map = new Uint8Array(width * height);
+        this.flowMap = new Float32Array(width * height * 2);
         this.generateRuinedCity();
     }
 
@@ -26,6 +31,7 @@ export class TerrainSystem {
         const centerY = Math.floor(this.height / 2);
 
         this.map.fill(0);
+        this.flowMap.fill(0);
 
         const blockSize = 12;
         const streetWidth = 2;
@@ -59,7 +65,6 @@ export class TerrainSystem {
                 // --- 1. Organic City Boundary ---
                 const maxRadius = 35 + (Math.sin(angle * 5) * 10) + (Math.cos(angle * 13) * 5);
 
-                // Central Plaza Logic
                 if (dist < 8) {
                     if (isCentralPark) {
                         this.map[i] = 3; 
@@ -70,13 +75,11 @@ export class TerrainSystem {
                 // --- HIGHWAY LOGIC ---
                 let isHighway = false;
 
-                // A. The Ring Road (Orbital Highway)
                 const ringNoise = Math.sin(angle * 6) * 1.5; 
                 if (Math.abs(dist - (30 + ringNoise)) < 1.5) { 
                     isHighway = true;
                 }
 
-                // B. Radial Highways
                 for (const hw of highways) {
                     let targetAngle = hw.angle + (dist * hw.curve);
                     let diff = Math.atan2(Math.sin(angle - targetAngle), Math.cos(angle - targetAngle));
@@ -109,61 +112,70 @@ export class TerrainSystem {
                         this.map[i] = 2; // Road
                     }
                 } else {
-                    // --- 3. Improved Building Blocks ---
+                    // --- 3. Blocks & Lakes ---
                     const density = (dist < 20) ? 0.85 : 0.4;
-
                     const bx = Math.floor(x / 2); 
                     const by = Math.floor(y / 2);
-                    
                     const structureHash = Math.abs(Math.sin(bx * 12.9898 + by * 78.233) * 43758.5453) % 1;
                     
-                    // --- LAKE GENERATION ---
-                    // Very Low Frequency Noise (0.05) for large bodies of water
                     const lakeNoise = Math.sin(x * 0.05) * Math.cos(y * 0.05);
-                    // Puddle Noise (High Freq)
                     const puddleNoise = Math.sin(x * 0.15) * Math.cos(y * 0.15);
 
                     if (lakeNoise > 0.7 && dist > 15) {
-                        // Large Lake (Only outside city center)
                         this.map[i] = 4; // Water
                     } else if (structureHash < density) {
-                        this.map[i] = 1; // Wall (Building)
+                        this.map[i] = 1; // Wall
                     } else if (structureHash < density + 0.1) {
-                        this.map[i] = 3; // Courtyard/Park inside block
+                        this.map[i] = 3; // Park
                     } else {
-                        // Small Puddles
                         if (puddleNoise > 0.6) {
                             this.map[i] = 4; // Water
                         } else {
-                            this.map[i] = 0; // Alley/Gap
+                            this.map[i] = 0; // Dirt
                         }
                     }
                 }
             }
         }
         
-        // --- 5. Canal Generation ---
+        // --- 5. Canal Generation (With Flow) ---
         const numCanals = 2;
         for (let k = 0; k < numCanals; k++) {
-             let cx = Math.random() * this.width;
-             let cy = 0; 
-             if(k===1) { cx = 0; cy = Math.random() * this.height; } 
-
-             const steps = 200;
-             const angle = (k===0) ? Math.PI/2 : 0; 
+             // Pick random start point on edge or center
+             let cx = (k===0) ? 0 : Math.random() * this.width;
+             let cy = (k===0) ? Math.random() * this.height : 0;
+             
+             // Simple direction vector
+             let vx = (k===0) ? 1 : 0; // East
+             let vy = (k===0) ? 0 : 1; // South
+             
+             // Add some curve
+             const steps = 250;
              
              for(let s=0; s<steps; s++) {
-                 cx += Math.cos(angle + Math.sin(s*0.1)*0.5);
-                 cy += Math.sin(angle + Math.sin(s*0.1)*0.5);
+                 // Wiggle the direction
+                 const wiggle = Math.sin(s * 0.05) * 0.5;
+                 vx = Math.cos(wiggle + (k===0?0:Math.PI/2));
+                 vy = Math.sin(wiggle + (k===0?0:Math.PI/2));
+
+                 cx += vx * 0.8;
+                 cy += vy * 0.8;
                  
                  const ix = Math.floor(cx);
                  const iy = Math.floor(cy);
                  
+                 // Carve canal (width 3)
                  for(let dy=-1; dy<=1; dy++) {
                      for(let dx=-1; dx<=1; dx++) {
                          const idx = (iy+dy) * this.width + (ix+dx);
                          if (idx >= 0 && idx < this.map.length) {
-                             if(this.map[idx] !== 2) this.map[idx] = 5; 
+                             if(this.map[idx] !== 2) { // Don't overwrite highways
+                                 this.map[idx] = 5; // Canal
+                                 
+                                 // Store flow vector
+                                 this.flowMap[idx*2] = vx;
+                                 this.flowMap[idx*2+1] = vy;
+                             }
                          }
                      }
                  }
@@ -198,18 +210,10 @@ export class TerrainSystem {
                         }
                     }
 
-                    // Rule 1: Solidify Buildings
                     if (type === 0 && walls >= 5) tempMap[i] = 1;
-
-                    // Rule 2: Erode lonely walls
                     if (type === 1 && walls < 2) tempMap[i] = 0; 
-                    
-                    // Rule 3: Nature reclamation
                     if (type === 0 && nature > 1 && Math.random() < 0.1) tempMap[i] = 3;
                     if (type === 2 && roads < 1) tempMap[i] = 0; 
-                    
-                    // Rule 4: Water expansion (Lakes grow slightly)
-                    // If near a lot of water, turn dirt to water (flooding)
                     if (type === 0 && water > 3 && Math.random() < 0.2) tempMap[i] = 4;
                 }
             }
@@ -229,5 +233,13 @@ export class TerrainSystem {
     isWallIndex(i: number): boolean {
         if (i < 0 || i >= this.map.length) return true;
         return this.map[i] === 1;
+    }
+
+    // New API for FluidSystem
+    getFlow(i: number): { x: number, y: number } {
+        return {
+            x: this.flowMap[i*2],
+            y: this.flowMap[i*2+1]
+        };
     }
 }
