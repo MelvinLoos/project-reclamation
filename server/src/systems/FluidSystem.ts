@@ -10,6 +10,9 @@ export class FluidSystem {
     
     private terrainSystem: TerrainSystem;
 
+    // Toggle this to true/false to enable/disable fluid simulation
+    public isFluidEnabled: boolean = true; 
+
     constructor(width: number, height: number, terrainSystem: TerrainSystem) {
         this.width = width;
         this.height = height;
@@ -23,6 +26,9 @@ export class FluidSystem {
     }
 
     tick(deltaTime: number) {
+        // If disabled, stop simulation logic
+        if (!this.isFluidEnabled) return;
+
         this.nextFluid.set(this.currentFluid);
 
         // Source: Pump in center
@@ -71,6 +77,10 @@ export class FluidSystem {
 
     getCompressedState(): Uint8Array {
         const buffer = new Uint8Array(this.size);
+        
+        // If disabled, send empty buffer so client clears any existing fluid
+        if (!this.isFluidEnabled) return buffer;
+
         for(let i=0; i<this.size; i++) {
             // TWEAK: Adjusted visual scaling so 0.5 flow is still visible
             const val = Math.min(255, Math.floor(this.currentFluid[i] * 50.0)); 

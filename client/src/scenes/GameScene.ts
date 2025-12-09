@@ -28,23 +28,26 @@ export class GameScene extends Phaser.Scene {
     create() {
         console.log("Initializing GameScene...");
 
+        // 1. Generate the visuals for the map (Dirt/Wall)
         this.generateTileset();
 
-        // Setup Fluid Visuals
+        // 2. Setup Fluid Visuals (Layer 1 - Top)
         this.fluidTexture = this.textures.createCanvas('fluid_data', this.fluidDim, this.fluidDim);
         this.fluidImageData = this.fluidTexture.context.createImageData(this.fluidDim, this.fluidDim);
 
         this.fluidImage = this.add.image(0, 0, 'fluid_data').setOrigin(0, 0);
         this.fluidImage.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-        this.fluidImage.setDepth(1); 
+        this.fluidImage.setDepth(1); // Draw ABOVE the terrain
 
-        // Handle Resizing
+        // 3. Handle Resizing (Responsive Layout)
         this.scale.on('resize', this.resizeGame, this);
         this.time.delayedCall(10, () => this.resizeGame());
 
+        // 4. Connect
         this.client = new Client("ws://localhost:2567");
         this.connect();
 
+        // 5. Input
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             if (this.room) {
                 this.room.send(MSG_INPUT.CLICK, { x: pointer.worldX, y: pointer.worldY });
@@ -55,15 +58,21 @@ export class GameScene extends Phaser.Scene {
     private resizeGame() {
         const width = this.scale.width;
         const height = this.scale.height;
+
+        // Target Aspect Ratio (Square 1:1)
         const minDim = Math.min(width, height);
+        
+        // Calculate centered position
         const x = (width - minDim) / 2;
         const y = (height - minDim) / 2;
 
+        // Apply to Fluid Image
         if (this.fluidImage) {
             this.fluidImage.setPosition(x, y);
             this.fluidImage.setDisplaySize(minDim, minDim);
         }
 
+        // Apply to Terrain Layer
         if (this.terrainLayer) {
             this.terrainLayer.setPosition(x, y);
             const scale = minDim / (this.fluidDim * 32); 
@@ -75,10 +84,11 @@ export class GameScene extends Phaser.Scene {
 
     /**
      * Enhanced Procedural Tileset
+     * 0: Dirt, 1: Wall, 2: Road, 3: Park, 4: Water, 5: Canal
      */
     private generateTileset() {
-        // Create a 128x32 texture containing four 32x32 tiles
-        const canvas = this.textures.createCanvas('tileset', 128, 32);
+        // Create a 192x32 texture containing six 32x32 tiles
+        const canvas = this.textures.createCanvas('tileset', 192, 32);
         const ctx = canvas.context;
 
         // Tile 0: Dirt (Brown)
@@ -104,7 +114,20 @@ export class GameScene extends Phaser.Scene {
         ctx.fillStyle = '#2e7d32';
         ctx.fillRect(96, 0, 32, 32);
         ctx.fillStyle = '#a5d6a7'; // Flower/Light grass
-        ctx.fillRect(100, 100, 4, 4); 
+        ctx.fillRect(100, 10, 4, 4); 
+
+        // Tile 4: Water (Stagnant - Murky Green/Blue)
+        ctx.fillStyle = '#006064'; 
+        ctx.fillRect(128, 0, 32, 32);
+        ctx.fillStyle = '#00838f'; // Ripple
+        ctx.fillRect(132, 8, 20, 4);
+        ctx.fillRect(140, 20, 10, 4);
+
+        // Tile 5: Canal (Flowing Blue + Concrete Edges)
+        ctx.fillStyle = '#90a4ae'; // Concrete Edge
+        ctx.fillRect(160, 0, 32, 32);
+        ctx.fillStyle = '#0277bd'; // Clean Blue Water
+        ctx.fillRect(160, 4, 32, 24); // Channel in middle
 
         canvas.refresh();
     }
@@ -114,17 +137,24 @@ export class GameScene extends Phaser.Scene {
             this.room = await this.client.joinOrCreate("game_room");
             console.log("Joined Room:", this.room.name);
 
+            // --- HANDLERS ---
+
+            // 1. Terrain Map (Static, received once)
             this.room.onMessage(MSG_FLUID.TERRAIN, (message: any) => {
+                console.log("Received Terrain Map");
+                // Convert buffer to Uint8Array
                 if (message instanceof ArrayBuffer || (message.buffer && message.byteLength !== undefined)) {
                     const data = new Uint8Array(message instanceof ArrayBuffer ? message : message.buffer);
                     this.createTerrainMap(data);
                 }
             });
 
+            // 2. Fluid Config
             this.room.onMessage(MSG_FLUID.CONFIG, (message: any) => {
                 console.log("Fluid Config:", message);
             });
 
+            // 3. Fluid Update (Dynamic)
             this.room.onMessage(MSG_FLUID.PATCH, (message: any) => {
                 if (message instanceof ArrayBuffer || (message.buffer && message.byteLength !== undefined)) {
                     const buffer = message instanceof ArrayBuffer ? message : message.buffer;
@@ -140,8 +170,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     private createTerrainMap(data: Uint8Array) {
+        // Convert 1D array to 2D array for Phaser
         const mapData: number[][] = [];
-        const width = 100;
+        const width = 100; // Known from config
         
         for (let y = 0; y < width; y++) {
             const row: number[] = [];
@@ -155,7 +186,7 @@ export class GameScene extends Phaser.Scene {
         const tiles = this.map.addTilesetImage('tileset', 'tileset', 32, 32);
         if(tiles) {
             this.terrainLayer = this.map.createLayer(0, tiles, 0, 0)!;
-            this.terrainLayer.setDepth(0);
+            this.terrainLayer.setDepth(0); // Layer 0 - Bottom
             this.resizeGame();
         }
     }
@@ -174,13 +205,14 @@ export class GameScene extends Phaser.Scene {
             const idx = i * 4;
             
             if (val > 0) {
-                // Toxic Green Sludge
-                d[idx + 0] = 50;     
-                d[idx + 1] = val + 100; 
-                d[idx + 2] = 50;     
-                d[idx + 3] = 200;   
+                // R, G, B, Alpha
+                d[idx + 0] = 0;     
+                d[idx + 1] = val + 50; // Bright Green
+                d[idx + 2] = 0;     
+                // Alpha: 180 (Semi-transparent) so we can see the ruins underneath!
+                d[idx + 3] = 180;   
             } else {
-                d[idx + 3] = 0;     
+                d[idx + 3] = 0;     // Transparent
             }
         }
         
