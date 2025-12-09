@@ -10,7 +10,7 @@ export class GameScene extends Phaser.Scene {
     private players: Map<string, Phaser.GameObjects.Graphics> = new Map();
 
     // Fluid
-    private fluidTexture!: Phaser.Textures.CanvasTexture; 
+    private fluidTexture!: Phaser.Textures.CanvasTexture | null; 
     private fluidDim = 100; 
     private fluidImageData!: ImageData; 
     private fluidImage!: Phaser.GameObjects.Image;
@@ -33,6 +33,7 @@ export class GameScene extends Phaser.Scene {
 
         // 2. Setup Fluid Visuals (Layer 1 - Top)
         this.fluidTexture = this.textures.createCanvas('fluid_data', this.fluidDim, this.fluidDim);
+        if (!this.fluidTexture) return;
         this.fluidImageData = this.fluidTexture.context.createImageData(this.fluidDim, this.fluidDim);
 
         this.fluidImage = this.add.image(0, 0, 'fluid_data').setOrigin(0, 0);
@@ -89,6 +90,7 @@ export class GameScene extends Phaser.Scene {
     private generateTileset() {
         // Create a 192x32 texture containing six 32x32 tiles
         const canvas = this.textures.createCanvas('tileset', 192, 32);
+        if (!canvas) return;
         const ctx = canvas.context;
 
         // Tile 0: Dirt (Brown)
@@ -129,7 +131,9 @@ export class GameScene extends Phaser.Scene {
         ctx.fillStyle = '#0277bd'; // Clean Blue Water
         ctx.fillRect(160, 4, 32, 24); // Channel in middle
 
-        canvas.refresh();
+        if (canvas) {
+            canvas.refresh();
+        }
     }
 
     private async connect() {

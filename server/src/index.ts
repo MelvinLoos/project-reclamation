@@ -3,10 +3,11 @@
  * Initializes the Colyseus Game Server and registers Rooms.
  */
 import { Server } from "colyseus";
+import { WebSocketTransport } from "@colyseus/ws-transport";
 import { createServer } from "http";
 import express from "express";
 import cors from "cors";
-import { GameRoom } from "./rooms/GameRoom"; // Ensure you place GameRoom.ts in /rooms
+import { GameRoom } from "./rooms/GameRoom";
 
 const port = Number(process.env.PORT || 2567);
 const app = express();
@@ -14,8 +15,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const httpServer = createServer(app);
+
 const gameServer = new Server({
-  server: createServer(app),
+  transport: new WebSocketTransport({
+    server: httpServer,
+  }),
 });
 
 // Register the Main Game Room
