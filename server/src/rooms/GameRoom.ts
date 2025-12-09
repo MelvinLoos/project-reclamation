@@ -1,34 +1,57 @@
 import { Room, Client } from "colyseus";
-import { GameState } from "./schema/GameState";
+import { WorldState } from "../../../shared/schemas/WorldState"; 
+import { FluidSystem } from "../systems/FluidSystem";
 import { MSG_FLUID, MSG_INPUT } from "../../../shared/constants/MessageTags";
 
-export class GameRoom extends Room<GameState> {
+export class GameRoom extends Room<WorldState> {
     
-    // Simulation Loop Timer
+    // The Authoritative Simulation
+    private fluidSystem!: FluidSystem;
     private fluidInterval: any;
 
     onCreate(options: any) {
-        this.setState(new GameState());
+        console.log("Creating GameRoom with Shared Schemas...");
+        
+        // 1. Set State to the Shared WorldState (TDD 01)
+        this.setState(new WorldState());
 
-        // Set the simulation tick rate (e.g., 20fps for logic)
+        // 2. Initialize the Fluid System (100x100 Grid)
+        this.fluidSystem = new FluidSystem(100, 100);
+
+        // 3. Set Simulation Loop (20 TPS)
+        // This calls update() 20 times per second
         this.setSimulationInterval((deltaTime) => this.update(deltaTime));
 
-        // Setup a separate interval for broadcasting Fluid Data (Bandwidth optimization)
-        // We might calculate fluid every tick, but only send it every 100ms (10Hz)
+        // 4. Setup Network Broadcasting (10Hz)
+        // We decouple simulation (20Hz) from network (10Hz) to save bandwidth
         this.fluidInterval = setInterval(() => this.broadcastFluid(), 100);
 
-        // Handle Input
+        // 5. Input Handlers
         this.onMessage(MSG_INPUT.CLICK, (client, message) => {
-            this.state.movePlayer(client.sessionId, message.x, message.y);
+            if(message && typeof message.x === 'number' && typeof message.y === 'number') {
+                const player = this.state.players.get(client.sessionId);
+                if (player) {
+                    player.x = message.x;
+                    player.y = message.y;
+                }
+            }
         });
     }
 
     onJoin(client: Client, options: any) {
         console.log(client.sessionId, "joined!");
-        this.state.createPlayer(client.sessionId);
         
-        // Send initial config
-        client.send(MSG_FLUID.CONFIG, { width: 100, height: 100 });
+        // Create player using the WorldState logic
+        this.state.createPlayer(client.sessionId, Math.random() * 800, Math.random() * 600);
+        
+        // Ethical Retention: Calculate Offline Gains
+        const player = this.state.players.get(client.sessionId);
+        if(player) {
+            player.retention.calculateOfflineGain();
+        }
+
+        // Send Configuration Handshake
+        client.send(MSG_FLUID.CONFIG, { width: this.fluidSystem.width, height: this.fluidSystem.height });
     }
 
     onLeave(client: Client, consented: boolean) {
@@ -42,27 +65,24 @@ export class GameRoom extends Room<GameState> {
     }
 
     update(deltaTime: number) {
-        // Standard Game Logic (Entity movement, etc.)
-        // this.fluidSystem.tick(deltaTime); 
+        // --- CRITICAL FIX: Run the Simulation ---
+        // Previously this line was missing or commented out!
+        // console.log("Server Tick"); // Too spammy, uncomment only if desperate
+        this.fluidSystem.tick(deltaTime);
     }
 
-    /**
-     * Broadcasting the Fluid Data
-     * This replaces the old "fluidParams" or "fluidPatch" strings with the Constant
-     */
     private broadcastFluid() {
-        // Mocking the binary buffer for now. 
-        // In reality, this comes from FluidSystem.getCompressedBuffer()
-        const mockSize = 100 * 100;
-        const buffer = new Uint8Array(mockSize);
-
-        // Fill with some dummy noise to verify client rendering
-        for(let i=0; i<mockSize; i++) {
-            // Simple moving wave pattern
-            buffer[i] = (Math.sin(i * 0.1 + Date.now() * 0.005) * 127) + 128; 
+        // Get the real data from the system
+        const buffer = this.fluidSystem.getCompressedState();
+        
+        // DEBUG: Check if buffer has data
+        let nonZero = 0;
+        for(let i=0; i<100; i++) { // Check first 100 cells
+             if(buffer[i] > 0) nonZero++;
         }
+        // console.log(`Broadcasting Fluid. Size: ${buffer.length}, Sample Non-Zero: ${nonZero}`);
 
-        // --- THE FIX: Using Shared Constant ---
+        // Broadcast via the Shared Constant Tag
         this.broadcast(MSG_FLUID.PATCH, buffer);
     }
 }
