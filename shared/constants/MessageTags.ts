@@ -2,16 +2,9 @@
 // It acts as the contract for all network communication.
 
 export const MSG_FLUID = {
-    /** * Sent by Server (approx 10Hz).
-     * Payload: Uint8Array (RLE Compressed or Raw Quantized Fluid Data).
-     */
-    PATCH: "fluidPatch",
-
-    /**
-     * Sent by Server on Join.
-     * Payload: { width: number, height: number }
-     */
-    CONFIG: "fluidConfig"
+    PATCH: "fluid_patch",
+    CONFIG: "fluid_config",
+    TERRAIN: "fluid_terrain",
 };
 
 export const MSG_INPUT = {

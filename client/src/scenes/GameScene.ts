@@ -9,9 +9,15 @@ export class GameScene extends Phaser.Scene {
     private room!: Room<any>; 
     private players: Map<string, Phaser.GameObjects.Graphics> = new Map();
 
+    // Fluid
     private fluidTexture!: Phaser.Textures.CanvasTexture; 
     private fluidDim = 100; 
     private fluidImageData!: ImageData; 
+    private fluidImage!: Phaser.GameObjects.Image;
+    
+    // Terrain
+    private map!: Phaser.Tilemaps.Tilemap;
+    private terrainLayer!: Phaser.Tilemaps.TilemapLayer;
 
     constructor() {
         super("GameScene");
@@ -22,25 +28,23 @@ export class GameScene extends Phaser.Scene {
     create() {
         console.log("Initializing GameScene...");
 
-        // 1. Create the Fluid Texture
-        // This acts as the main visual for now.
-        // We create it at 100x100 resolution.
+        this.generateTileset();
+
+        // Setup Fluid Visuals
         this.fluidTexture = this.textures.createCanvas('fluid_data', this.fluidDim, this.fluidDim);
         this.fluidImageData = this.fluidTexture.context.createImageData(this.fluidDim, this.fluidDim);
 
-        // 2. Add it to the Scene
-        // We scale it up 8x to fill the 800x800 world space
-        // setFilter(Phaser.Textures.FilterMode.NEAREST) makes it look pixelated (retro) instead of blurry
-        const fluidImage = this.add.image(0, 0, 'fluid_data').setOrigin(0, 0);
-        fluidImage.setScale(8); 
-        fluidImage.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-        fluidImage.setDepth(0);
+        this.fluidImage = this.add.image(0, 0, 'fluid_data').setOrigin(0, 0);
+        this.fluidImage.texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
+        this.fluidImage.setDepth(1); 
 
-        // 3. Connect Network
+        // Handle Resizing
+        this.scale.on('resize', this.resizeGame, this);
+        this.time.delayedCall(10, () => this.resizeGame());
+
         this.client = new Client("ws://localhost:2567");
         this.connect();
 
-        // 4. Input
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             if (this.room) {
                 this.room.send(MSG_INPUT.CLICK, { x: pointer.worldX, y: pointer.worldY });
@@ -48,10 +52,74 @@ export class GameScene extends Phaser.Scene {
         });
     }
 
+    private resizeGame() {
+        const width = this.scale.width;
+        const height = this.scale.height;
+        const minDim = Math.min(width, height);
+        const x = (width - minDim) / 2;
+        const y = (height - minDim) / 2;
+
+        if (this.fluidImage) {
+            this.fluidImage.setPosition(x, y);
+            this.fluidImage.setDisplaySize(minDim, minDim);
+        }
+
+        if (this.terrainLayer) {
+            this.terrainLayer.setPosition(x, y);
+            const scale = minDim / (this.fluidDim * 32); 
+            this.terrainLayer.setScale(scale);
+        }
+        
+        this.cameras.main.setViewport(0, 0, width, height);
+    }
+
+    /**
+     * Enhanced Procedural Tileset
+     */
+    private generateTileset() {
+        // Create a 128x32 texture containing four 32x32 tiles
+        const canvas = this.textures.createCanvas('tileset', 128, 32);
+        const ctx = canvas.context;
+
+        // Tile 0: Dirt (Brown)
+        ctx.fillStyle = '#5d4037';
+        ctx.fillRect(0, 0, 32, 32);
+        ctx.fillStyle = '#3e2723';
+        ctx.fillRect(4, 4, 24, 24);
+
+        // Tile 1: Wall/Ruin (Concrete Blue-Grey)
+        ctx.fillStyle = '#455a64'; 
+        ctx.fillRect(32, 0, 32, 32);
+        ctx.fillStyle = '#cfd8dc'; // Rebar/Highlight
+        ctx.fillRect(36, 4, 4, 24);
+        ctx.fillRect(48, 4, 4, 12);
+
+        // Tile 2: Road (Asphalt)
+        ctx.fillStyle = '#212121';
+        ctx.fillRect(64, 0, 32, 32);
+        ctx.fillStyle = '#ffeb3b'; // Yellow Line
+        ctx.fillRect(78, 12, 4, 8); // Dash
+
+        // Tile 3: Park (Grass)
+        ctx.fillStyle = '#2e7d32';
+        ctx.fillRect(96, 0, 32, 32);
+        ctx.fillStyle = '#a5d6a7'; // Flower/Light grass
+        ctx.fillRect(100, 100, 4, 4); 
+
+        canvas.refresh();
+    }
+
     private async connect() {
         try {
             this.room = await this.client.joinOrCreate("game_room");
             console.log("Joined Room:", this.room.name);
+
+            this.room.onMessage(MSG_FLUID.TERRAIN, (message: any) => {
+                if (message instanceof ArrayBuffer || (message.buffer && message.byteLength !== undefined)) {
+                    const data = new Uint8Array(message instanceof ArrayBuffer ? message : message.buffer);
+                    this.createTerrainMap(data);
+                }
+            });
 
             this.room.onMessage(MSG_FLUID.CONFIG, (message: any) => {
                 console.log("Fluid Config:", message);
@@ -71,6 +139,27 @@ export class GameScene extends Phaser.Scene {
         }
     }
 
+    private createTerrainMap(data: Uint8Array) {
+        const mapData: number[][] = [];
+        const width = 100;
+        
+        for (let y = 0; y < width; y++) {
+            const row: number[] = [];
+            for (let x = 0; x < width; x++) {
+                row.push(data[y * width + x]);
+            }
+            mapData.push(row);
+        }
+
+        this.map = this.make.tilemap({ data: mapData, tileWidth: 32, tileHeight: 32 });
+        const tiles = this.map.addTilesetImage('tileset', 'tileset', 32, 32);
+        if(tiles) {
+            this.terrainLayer = this.map.createLayer(0, tiles, 0, 0)!;
+            this.terrainLayer.setDepth(0);
+            this.resizeGame();
+        }
+    }
+
     private updateFluidData(data: Uint8Array) {
         if (!this.fluidTexture) return;
 
@@ -84,17 +173,14 @@ export class GameScene extends Phaser.Scene {
             const val = data[i]; 
             const idx = i * 4;
             
-            // Visualization Logic:
-            // If val > 0, we show it. 
-            // We can map intensity to color here directly in CPU since the grid is small (100x100).
-            
             if (val > 0) {
-                d[idx + 0] = 0;     // R
-                d[idx + 1] = val + 50; // G (Base green + intensity)
-                d[idx + 2] = 0;     // B
-                d[idx + 3] = 255;   // Alpha
+                // Toxic Green Sludge
+                d[idx + 0] = 50;     
+                d[idx + 1] = val + 100; 
+                d[idx + 2] = 50;     
+                d[idx + 3] = 200;   
             } else {
-                d[idx + 3] = 0;     // Transparent
+                d[idx + 3] = 0;     
             }
         }
         
@@ -122,9 +208,5 @@ export class GameScene extends Phaser.Scene {
         };
     }
 
-    // No longer needed: generateProceduralTextures()
-    
-    update(time: number, delta: number) {
-        // No shader updates needed
-    }
+    update(time: number, delta: number) {}
 }
