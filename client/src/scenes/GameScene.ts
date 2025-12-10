@@ -41,7 +41,9 @@ export class GameScene extends Phaser.Scene {
         this.generateTileset();
 
         // 2. Setup Fluid Visuals (Layer 1 - Top)
-        this.fluidTexture = this.textures.createCanvas('fluid_data', this.fluidDim, this.fluidDim);
+        const fluidCanvas = this.textures.createCanvas('fluid_data', this.fluidDim, this.fluidDim);
+        if (!fluidCanvas) return;
+        this.fluidTexture = fluidCanvas;
         this.fluidImageData = this.fluidTexture.context.createImageData(this.fluidDim, this.fluidDim);
 
         this.fluidImage = this.add.image(0, 0, 'fluid_data').setOrigin(0, 0);
@@ -133,6 +135,7 @@ export class GameScene extends Phaser.Scene {
      */
     private generateTileset() {
         const canvas = this.textures.createCanvas('tileset', 256, 32);
+        if (!canvas) return;
         const ctx = canvas.context;
 
         // Tile 0: Dirt
